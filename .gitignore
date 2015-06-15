@@ -1,0 +1,9 @@
+# Pycharm dir
+.idea
+
+*.py[co]
+*.sw[pon]
+*~
+nosetests.xml
+logs
+

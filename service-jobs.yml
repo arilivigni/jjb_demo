@@ -1,0 +1,58 @@
+- defaults:
+    name: default-service-jobs
+    logrotate:
+      numToKeep: 30
+      artifactNumToKeep: 15
+
+- wrapper:
+    name: default-service-jjb-jobs-wrapper
+    wrappers:
+      - inject-passwords:
+          global: true
+      - mask-passwords
+
+- wrapper:
+    name: default-service-jobs-wrapper
+    wrappers:
+        - ansicolor
+        - workspace-cleanup
+        - timestamps
+
+- job-template:
+    name: 'jjb_{jjb_names}'
+    defaults: default-service-jobs
+    node: master
+    description: |
+        This job builds the other jobs from the definitions for {jjb_names}
+        Managed by Jenkins Job Builder. Do not edit via web.
+    retry-count: 3
+    scm:
+        - git:
+            url: 'https://github.com/arilivigni/jjb_demo.git'
+            branches:
+                - origin/master
+            basedir: jjb_demo
+    triggers:
+      - pollscm: "H/2 * * * *"
+    wrappers:
+      - default-service-jobs-wrapper
+      - default-service-jjb-jobs-wrapper
+    builders:
+        - shell: |
+            cat > $WORKSPACE/config << EOF
+            [jenkins]
+            user=$JOB_BUILDER_USER
+            password=$JOB_BUILDER_PASS
+            url=$JENKINS_URL
+            EOF
+
+            jenkins-jobs --conf $WORKSPACE/config --ignore-cache update $WORKSPACE/jjb_demo/{jjb_names}
+
+
+- project:
+    name: service-jobs
+    jjb_names:
+      - project_a
+      - project_b
+    jobs:
+      - jjb_{jjb_names}

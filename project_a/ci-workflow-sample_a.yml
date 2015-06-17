@@ -1,0 +1,174 @@
+- job-template:
+    name: 'a_ci-{project}-{topology}-1-provision'
+    defaults: ci-workflow-provision
+    node: master
+    parameters:
+        - choice:
+            name: SITE
+            choices:
+              - qeos
+              - os1
+            description: |
+              Site where to provision resources
+    builders:
+        - shell: |
+            #!/bin/bash
+
+            export JSLAVENAME={jslavename}
+            # Provision Jenkins Slave
+            if [ "$JSLAVENAME" != "master" ]
+            then
+                $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --site=$SITE --project_defaults={project_defaults} \
+                --topology=ci-ops-central/project/config/aio_jslave --ssh_keyfile={ssh_keyfile} \
+                --jslavename={jslavename} --jslaveflavor={jslaveflavor} --jslaveimage={jslaveimage} \
+                --jslave_execs={jslave_execs} --jslavecreate --resources_file={jslavename}.json
+
+                TR_STATUS=$?
+                if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
+            fi
+
+            # Provision Test Resources
+            $WORKSPACE/ci-ops-central/bootstrap/provision_resources.sh --site=$SITE --project_defaults={project_defaults} \
+            --topology={topology_path}/{topology} --ssh_keyfile={ssh_keyfile} --name={project}
+
+            TR_STATUS=$?
+
+            files=$(ls $WORKSPACE/*.slave 2>/dev/null)
+            if [ -e "$files" ]
+            then
+                cat $WORKSPACE/*.slave >> $WORKSPACE/RESOURCES.txt
+            fi
+
+            if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
+
+
+        - inject:
+            properties-file: $WORKSPACE/RESOURCES.txt
+
+    publishers:
+      - archive:
+          artifacts: '*.txt, *.json'
+          allow-empty: 'true'
+      - trigger-parameterized-builds:
+          - project: 'a_{project}-{topology}-2-runtest'
+            current-parameters: true
+            condition: 'SUCCESS'
+            property-file: $WORKSPACE/RESOURCES.txt
+            fail-on-missing: true
+          - project: 'a_ci-{project}-{topology}-3-teardown'
+            current-parameters: true
+            condition: 'UNSTABLE_OR_WORSE'
+            property-file: $WORKSPACE/RESOURCES.txt
+            fail-on-missing: true
+      - default-ci-workflow-publishers
+
+
+- job-template:
+    name: 'a_{project}-{topology}-2-runtest'
+    defaults: ci-workflow-runtest
+    node: '{jslavename}'
+    builders:
+        - copyartifact:
+            project: 'a_ci-{project}-{topology}-1-provision'
+            filter: '*.txt, *.json'
+            target: $WORKSPACE
+
+        - shell: |
+            #!/bin/bash
+
+            export TOPOLOGY={topology}
+            {testparams}
+
+            echo "TOPOLOGY: {topology}"
+
+            echo "Ping Jenkins Slave"
+            ping -c 10 $JSLAVEIP
+
+            echo "Jenkins machine info we are running on"
+            ifconfig
+
+            echo "Pinging Test Resources"
+            echo $EXISTING_NODES | xargs -i -d , ping -c 15 {{}}
+            cat $WORKSPACE/RESOURCES.txt
+            pushd $WORKSPACE/ci-ops-projex/tests
+            nosetests --with-xunit --xunit-file=$WORKSPACE/nosetests.xml
+            popd
+
+    publishers:
+      - archive:
+          artifacts: '**/**'
+          allow-empty: 'true'
+      - default-ci-workflow-runtest-publishers
+      - trigger-parameterized-builds:
+          - project: 'a_ci-{project}-{topology}-3-teardown'
+            current-parameters: true
+      - default-ci-workflow-publishers
+
+- job-template:
+    name: 'a_ci-{project}-{topology}-3-teardown'
+    defaults: ci-workflow-provision
+    node: master
+    builders:
+        - shell: |
+            #!/bin/bash
+
+            export JSLAVETEARDOWN={jslaveteardown}
+            # Teardown Jenkins Slave
+            $WORKSPACE/ci-ops-central/bootstrap/teardown_resources.sh --site=$SITE --project_defaults={project_defaults} \
+            --topology={topology_path}/{topology} --name=$LABEL
+
+            TR_STATUS=$?
+            if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
+
+            if [ "$JSLAVETEARDOWN" == "True" ]
+            then
+              $WORKSPACE/ci-ops-central/bootstrap/teardown_jslave.sh --site=$SITE --project_defaults={project_defaults} \
+              --topology=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
+              --jslaveusername={jslaveusername} --jslavepassword={jslavepassword} --jslaveip=$JSLAVEIP --jslaveteardown
+
+              TR_STATUS=$?
+              if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
+            fi
+
+- job-group:
+    name: a_ci-workflow-provision-runtest-teardown
+    jobs:
+      - 'a_ci-{project}-{topology}-1-provision'
+      - 'a_{project}-{topology}-2-runtest'
+      - 'a_ci-{project}-{topology}-3-teardown'
+
+- project:
+    name: a_ci-workflow-jobs
+    project:
+     - workflow
+    project_defaults:
+     - ci-ops-projex/config/project_defaults
+    topology_path:
+     - ci-ops-projex/config
+    topology:
+     - aio_RHEL6-5
+     - bkr_and_os
+     - 2comp
+     - foreman
+    ssh_keyfile:
+     - ci-ops-projex/config/keys/ci-ops-central
+    tests_path:
+     - ci-ops-projex/tests
+    testparams:
+     - echo "I am a test parameter"
+    jobs:
+      - a_ci-workflow-provision-runtest-teardown
+    jslavename:
+     - jslave-projex-slave
+    jslave_execs:
+     - 10
+    jslaveimage:
+     - rhel-6.5_jeos
+    jslaveflavor:
+     - m1.large
+    jslaveusername:
+     - root
+    jslavepassword:
+     - 123456
+    jslaveteardown:
+     - True

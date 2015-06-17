@@ -159,7 +159,7 @@
     jobs:
       - a_ci-workflow-provision-runtest-teardown
     jslavename:
-     - jslave-projex-slave
+     - jjb_demo_jslave-projex-slave
     jslave_execs:
      - 10
     jslaveimage:

@@ -150,6 +150,7 @@
      - bkr_and_os
      - 2comp
      - foreman
+     - aio_RHEL7-1
     ssh_keyfile:
      - ci-ops-projex/config/keys/ci-ops-central
     tests_path:

@@ -30,3 +30,4 @@ Is focused on architecture jjb macro to create multiple jobs
 ### Try with [test] keyword
 ### try without test keyword
 ### again
+### with [test]

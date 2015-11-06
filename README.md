@@ -31,3 +31,4 @@ Is focused on architecture jjb macro to create multiple jobs
 ### try without test keyword
 ### again
 ### with [test]
+REALLY WITH [test]

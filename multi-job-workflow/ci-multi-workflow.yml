@@ -1,0 +1,314 @@
+- defaults:
+    name: default-ci-multi-workflow
+    description: |
+        Managed by Jenkins Job Builder. Do not edit via web.
+    concurrent: false
+    logrotate:
+      numToKeep: 5
+    artifactNumToKeep: 5
+
+- scm:
+    name: default-ci-multi-workflow-provision-teardown-scm
+    scm:
+        - git:
+            url: 'https://code.engineering.redhat.com/gerrit/ci-ops-central'
+            branches:
+                - origin/master
+            basedir: ci-ops-central
+        - git:
+            url: 'https://code.engineering.redhat.com/gerrit/ci-ops-projex'
+            branches:
+                - origin/master
+            basedir: ci-ops-projex
+        - git:
+            url: 'https://code.engineering.redhat.com/gerrit/job-runner'
+            branches:
+                - origin/master
+            basedir: job-runner
+    wrappers:
+        - default-ci-multi-workflow-wrappers
+
+- scm:
+    name: default-ci-multi-workflow-runtest-scm
+    description: |
+        Managed by Jenkins Job Builder. Do not edit via web.
+    concurrent: false
+    scm:
+        - git:
+            url: 'https://code.engineering.redhat.com/gerrit/ci-ops-central'
+            branches:
+                - origin/master
+            basedir: ci-ops-central
+        - git:
+            url: 'https://code.engineering.redhat.com/gerrit/ci-ops-projex'
+            branches:
+                - origin/master
+            basedir: ci-ops-projex
+
+- wrapper:
+    name: default-ci-multi-workflow-wrappers
+    wrappers:
+        - ansicolor
+        - workspace-cleanup
+        - timestamps
+
+- wrapper:
+    name: default-ci-multi-workflow-build-timeout-wrapper
+    wrappers:
+        - timeout:
+            timeout-var: 'BUILD_TIMEOUT'
+            fail: true
+            elastic-percentage: 150
+            elastic-default-timeout: 90
+            type: elastic
+
+- publisher:
+    name: default-ci-multi-workflow-publishers
+    publishers:
+          - email-ext:
+              recipients: $DEFAULT_RECIPIENTS
+              reply-to: $DEFAULT_REPLYTO
+              content-type: default
+              subject: $DEFAULT_SUBJECT
+              body: $DEFAULT_CONTENT
+              attach-build-log: false
+              always: true
+              unstable: true
+              first-failure: true
+              not-built: true
+              aborted: true
+              regression: true
+              failure: true
+              improvement: true
+              still-failing: true
+              success: true
+              fixed: true
+              still-unstable: true
+              pre-build: true
+              matrix-trigger: only-configurations
+              send-to:
+                - requester
+                - recipients
+
+- publisher:
+    name: default-ci-multi-workflow-runtest-publishers
+    publishers:
+           - xunit:
+               thresholdmode: 'number'
+               thresholds:
+                 - failed:
+                       unstable: 0
+                       unstablenew: 0
+                       failure: 0
+                       failurenew: 0
+                 - skipped:
+                       unstable: 0
+                       unstablenew: 0
+                       failure: 0
+                       failurenew: 0
+               types:
+                 - junit:
+                     pattern: '*.xml'
+                     deleteoutput: false
+
+- job-template:
+    name: 'ci-{project}-{topology}-multijob'
+    defaults: default-ci-multi-workflow
+    node: master
+    project-type: multijob
+    wrappers:
+      - default-ci-multi-workflow-wrappers
+    builders:
+      - multijob:
+          name: provision
+          condition: SUCCESSFUL
+          projects:
+            - name: 'ci-{project}-{topology}-1-provision'
+              abort-all-job: true
+              current-parameters: true
+              property-file:  $WORKSPACE/RESOURCES.txt
+      - multijob:
+          name: runtests
+          condition: COMPLETED
+          projects:
+            - name: 'ci-{project}-{topology}-2-runtest-1'
+              abort-all-job: true
+              current-parameters: true
+            - name: 'ci-{project}-{topology}-2-runtest-2'
+              abort-all-job: true
+              current-parameters: true
+      - multijob:
+          name: teardown
+          condition: COMPLETED
+          projects:
+            - name: 'ci-{project}-{topology}-3-teardown'
+              abort-all-job: true
+              current-parameters: true
+
+
+
+- job-template:
+    name: 'ci-{project}-{topology}-1-provision'
+    defaults: default-ci-multi-workflow
+    node: master
+    parameters:
+        - choice:
+            name: SITE
+            choices:
+              - qeos
+              - os1
+            description: |
+              Site where to provision resources
+        - choice:
+            name: PROJECT_DEFAULTS
+            choices:
+              - project_defaults
+              - integration_test_defaults
+            description: |
+                Project defaults JSON file to use from ci-ops-projex/config
+    scm:
+      - default-ci-multi-workflow-provision-teardown-scm
+    wrappers:
+      - default-ci-multi-workflow-wrappers
+    builders:
+        - shell: |
+            #!/bin/bash
+            set -xeuo pipefail
+
+            export JSLAVENAME={jslavename}
+            # Provision Jenkins Slave
+            if [ "$JSLAVENAME" != "master" ]
+            then
+                $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --site=$SITE --project_defaults={project_defaults} \
+                --topology=ci-ops-central/project/config/aio_jslave --ssh_keyfile={ssh_keyfile} \
+                --jslavename={jslavename} --jslaveflavor={jslaveflavor} --jslaveimage={jslaveimage} \
+                --jslave_execs={jslave_execs} --jslavecreate --resources_file={jslavename}.json
+            fi
+
+            # Provision Test Resources
+            $WORKSPACE/ci-ops-central/bootstrap/provision_resources.sh --site=$SITE --project_defaults={project_defaults} \
+            --topology={topology_path}/{topology} --ssh_keyfile={ssh_keyfile} --name={project}
+
+            files=$(ls $WORKSPACE/*.slave 2>/dev/null)
+            if [ -e "$files" ]
+            then
+                cat $WORKSPACE/*.slave >> $WORKSPACE/RESOURCES.txt
+            fi
+
+        - inject:
+            properties-file: $WORKSPACE/RESOURCES.txt
+
+    publishers:
+      - archive:
+          artifacts: '*.txt, *.json'
+          allow-empty: 'true'
+      - default-ci-multi-workflow-publishers
+
+- job-template:
+    name: 'ci-{project}-{topology}-2-runtest-1'
+    defaults: default-ci-multi-workflow
+    node: '{jslavename}'
+    scm:
+      - default-ci-multi-workflow-runtest-scm
+    wrappers:
+        - default-ci-multi-workflow-wrappers
+        - default-ci-multi-workflow-build-timeout-wrapper
+    builders:
+        - copyartifact:
+            project: 'ci-{project}-{topology}-1-provision'
+            filter: '*.txt, *.json'
+            target: $WORKSPACE
+
+        - shell: |
+            #!/bin/bash
+            set -xeuo pipefail
+            echo "runtest-1" | tee runtest1.log
+
+    publishers:
+      - archive:
+          artifacts: '**/**'
+          allow-empty: 'true'
+      - default-ci-multi-workflow-runtest-publishers
+      - default-ci-multi-workflow-publishers
+
+- job-template:
+    name: 'ci-{project}-{topology}-2-runtest-2'
+    defaults: default-ci-multi-workflow
+    node: '{jslavename}'
+    scm:
+      - default-ci-multi-workflow-runtest-scm
+    wrappers:
+        - default-ci-multi-workflow-wrappers
+        - default-ci-multi-workflow-build-timeout-wrapper
+    builders:
+        - copyartifact:
+            project: 'ci-{project}-{topology}-1-provision'
+            filter: '*.txt, *.json'
+            target: $WORKSPACE
+
+        - shell: |
+            #!/bin/bash
+            set -xeuo pipefail
+            echo "runtest-2" | tee runtest2.log
+
+    publishers:
+      - archive:
+          artifacts: '**/**'
+          allow-empty: 'true'
+      - default-ci-multi-workflow-runtest-publishers
+      - default-ci-multi-workflow-publishers
+
+
+- job-template:
+    name: 'ci-{project}-{topology}-3-teardown'
+    defaults: default-ci-multi-workflow
+    node: master
+    scm:
+      - default-ci-multi-workflow-provision-teardown-scm
+    wrappers:
+        - default-ci-multi-workflow-wrappers
+        - default-ci-multi-workflow-build-timeout-wrapper
+    builders:
+        - shell: |
+            #!/bin/bash
+            set -xeuo pipefail
+
+            export JSLAVETEARDOWN={jslaveteardown}
+            # Teardown Jenkins Slave
+            $WORKSPACE/ci-ops-central/bootstrap/teardown_resources.sh --site=$SITE --project_defaults={project_defaults} \
+            --topology={topology_path}/{topology} --name=$LABEL
+
+            if [ "$JSLAVETEARDOWN" == "True" ]
+            then
+              $WORKSPACE/ci-ops-central/bootstrap/teardown_jslave.sh --site=$SITE --project_defaults={project_defaults} \
+              --topology=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
+              --jslaveusername={jslaveusername} --jslavepassword={jslavepassword} --jslaveip=$JSLAVEIP --jslaveteardown
+            fi
+
+- job-group:
+    name: ci-multi-workflow-provision-runtest-teardown
+    jobs:
+      - 'ci-{project}-{topology}-multijob'
+      - 'ci-{project}-{topology}-1-provision'
+      - 'ci-{project}-{topology}-2-runtest-1'
+      - 'ci-{project}-{topology}-2-runtest-2'
+      - 'ci-{project}-{topology}-3-teardown'
+
+- project:
+    name: ci-multi-workflow-jobs
+    project: multi-workflow
+    project_defaults: ci-ops-projex/config/$PROJECT_DEFAULTS
+    topology_path: ci-ops-projex/config
+    topology:
+     - aio_RHEL6-5
+    ssh_keyfile: ci-ops-projex/config/keys/ci-ops-central
+    tests_path: ci-ops-projex/tests
+    jslavename: jslave-projex-slave
+    jslave_execs: 10
+    jslaveimage: rhel-6.5_jeos
+    jslaveflavor: m1.large
+    jslaveusername: root
+    jslavepassword: 123456
+    jslaveteardown: True
+    jobs:
+      - ci-multi-workflow-provision-runtest-teardown

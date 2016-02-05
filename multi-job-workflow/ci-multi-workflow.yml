@@ -5,7 +5,7 @@
     concurrent: false
     logrotate:
       numToKeep: 5
-    artifactNumToKeep: 5
+      artifactNumToKeep: 5
 
 - scm:
     name: default-ci-multi-workflow-provision-teardown-scm

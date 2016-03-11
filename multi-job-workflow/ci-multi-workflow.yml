@@ -15,16 +15,19 @@
             branches:
                 - origin/master
             basedir: ci-ops-central
+            skip-tag: true
         - git:
             url: 'https://code.engineering.redhat.com/gerrit/ci-ops-projex'
             branches:
                 - origin/master
             basedir: ci-ops-projex
+            skip-tag: true
         - git:
             url: 'https://code.engineering.redhat.com/gerrit/job-runner'
             branches:
                 - origin/master
             basedir: job-runner
+            skip-tag: true
     wrappers:
         - default-ci-multi-workflow-wrappers
 
@@ -39,11 +42,13 @@
             branches:
                 - origin/master
             basedir: ci-ops-central
+            skip-tag: true
         - git:
             url: 'https://code.engineering.redhat.com/gerrit/ci-ops-projex'
             branches:
                 - origin/master
             basedir: ci-ops-projex
+            skip-tag: true
 
 - wrapper:
     name: default-ci-multi-workflow-wrappers
@@ -126,7 +131,6 @@
             - name: 'ci-{project}-{topology}-1-provision'
               abort-all-job: true
               current-parameters: true
-              property-file:  $WORKSPACE/RESOURCES.txt
       - multijob:
           name: runtests
           condition: COMPLETED
@@ -155,6 +159,7 @@
         - choice:
             name: SITE
             choices:
+              - cios
               - qeos
               - os1
             description: |
@@ -179,21 +184,28 @@
             # Provision Jenkins Slave
             if [ "$JSLAVENAME" != "master" ]
             then
-                $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --site=$SITE --project_defaults={project_defaults} \
-                --topology=ci-ops-central/project/config/aio_jslave --ssh_keyfile={ssh_keyfile} \
-                --jslavename={jslavename} --jslaveflavor={jslaveflavor} --jslaveimage={jslaveimage} \
-                --jslave_execs={jslave_execs} --jslavecreate --resources_file={jslavename}.json
+                $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh \
+                  --site=$SITE --project_defaults={project_defaults} \
+                --topology=ci-ops-central/project/config/aio_jslave \
+                --ssh_keyfile={ssh_keyfile} --jslavename={jslavename} \
+                --jslaveflavor={jslaveflavor} --jslaveimage={jslaveimage} \
+                --jslave_execs={jslave_execs} --jslavecreate \
+                --resources_file={jslavename}.json --cleanup=on_failure
             fi
 
             # Provision Test Resources
-            $WORKSPACE/ci-ops-central/bootstrap/provision_resources.sh --site=$SITE --project_defaults={project_defaults} \
-            --topology={topology_path}/{topology} --ssh_keyfile={ssh_keyfile} --name={project}
+            $WORKSPACE/ci-ops-central/bootstrap/provision_resources.sh \
+              --site=$SITE --project_defaults={project_defaults} \
+              --topology={topology_path}/{topology} \
+              --ssh_keyfile={ssh_keyfile} --name={project} --cleanup=on_failure
 
             files=$(ls $WORKSPACE/*.slave 2>/dev/null)
             if [ -e "$files" ]
             then
                 cat $WORKSPACE/*.slave >> $WORKSPACE/RESOURCES.txt
             fi
+
+            echo "PROJECT_DEFAULTS=$PROJECT_DEFAULTS" >> $WORKSPACE/RESOURCES.txt
 
         - inject:
             properties-file: $WORKSPACE/RESOURCES.txt
@@ -218,17 +230,25 @@
             project: 'ci-{project}-{topology}-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
+            which-build: upstream-build
+            fallback-to-last-successful: true
+
+        - inject:
+            properties-file: $WORKSPACE/RESOURCES.txt
 
         - shell: |
             #!/bin/bash
             set -xeuo pipefail
             echo "runtest-1" | tee runtest1.log
 
+            if [ -z $PROJECT_DEFAULTS ]; then
+                exit 1
+            fi
+
     publishers:
       - archive:
           artifacts: '**/**'
           allow-empty: 'true'
-      - default-ci-multi-workflow-runtest-publishers
       - default-ci-multi-workflow-publishers
 
 - job-template:
@@ -245,17 +265,25 @@
             project: 'ci-{project}-{topology}-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
+            which-build: upstream-build
+            fallback-to-last-successful: true
+
+        - inject:
+            properties-file: $WORKSPACE/RESOURCES.txt
 
         - shell: |
             #!/bin/bash
             set -xeuo pipefail
             echo "runtest-2" | tee runtest2.log
 
+            if [ -z $PROJECT_DEFAULTS ]; then
+                exit 1
+            fi
+
     publishers:
       - archive:
           artifacts: '**/**'
           allow-empty: 'true'
-      - default-ci-multi-workflow-runtest-publishers
       - default-ci-multi-workflow-publishers
 
 
@@ -269,9 +297,23 @@
         - default-ci-multi-workflow-wrappers
         - default-ci-multi-workflow-build-timeout-wrapper
     builders:
+        - copyartifact:
+            project: 'ci-{project}-{topology}-1-provision'
+            filter: '*.txt, *.json'
+            target: $WORKSPACE
+            which-build: upstream-build
+            fallback-to-last-successful: true
+
+        - inject:
+            properties-file: $WORKSPACE/RESOURCES.txt
+
         - shell: |
             #!/bin/bash
             set -xeuo pipefail
+
+            if [ -z $PROJECT_DEFAULTS ]; then
+                exit 1
+            fi
 
             export JSLAVETEARDOWN={jslaveteardown}
             # Teardown Jenkins Slave
@@ -309,6 +351,6 @@
     jslaveflavor: m1.large
     jslaveusername: root
     jslavepassword: 123456
-    jslaveteardown: True
+    jslaveteardown: False
     jobs:
       - ci-multi-workflow-provision-runtest-teardown
